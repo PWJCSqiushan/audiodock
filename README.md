@@ -128,6 +128,11 @@ npm run build
 
 自动测试使用合成音频与受控响应，不会每次运行都下载一小时视频。真实站点回归、界面截图和云端检查单独记录，不把 mock 测试写成线上成功。
 
+服务启动与文件响应测试需要本机回环网络：运行 pytest 前设置
+`AUDIODOCK_TEST_LOOPBACK=1`（PowerShell：`$env:AUDIODOCK_TEST_LOOPBACK="1"`）。CI 会启用这两项测试。
+后端启动后，可运行 `python scripts/smoke_test.py "视频链接" --output artifacts/check.mp3`
+完成真实任务、下载哈希与完整解码检查；它会消耗正常任务额度。
+
 ## 致谢
 
 这个项目始于两段跑步音乐的音轨整理，感谢让这件事变得可实现的开源工作：
