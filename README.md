@@ -16,7 +16,7 @@
 
 AudioDock 是一个开源的视频链接转音频工具。复制分享文字或视频链接，选择格式和音质，等待处理完成后直接下载。适合把有权使用的视频内容整理成通勤、学习或跑步时听的音频。
 
-**部署状态与实测记录见 [验收记录](docs/VALIDATION.md)。** GitHub Pages 承载界面，真实下载与转码依赖独立后端。后端未连接、休眠或上游拒绝访问时，页面会如实说明，不生成模拟的“成功结果”。
+**已部署，真实实测记录见 [验收记录](docs/VALIDATION.md)。** GitHub Pages 承载界面，Render 执行真实下载与转码。已完成 53 分钟 B站音乐的 MP3 下载校验，以及另一条 50 分钟音乐的网页原始音轨下载。后端休眠或上游拒绝访问时，页面会如实说明。
 
 ## 为什么做 AudioDock
 
@@ -34,6 +34,13 @@ AudioDock 是一个开源的视频链接转音频工具。复制分享文字或�
 <summary>查看手机界面</summary>
 
 <img src="docs/preview-mobile.jpg" width="300" alt="AudioDock 手机界面实拍" />
+
+</details>
+
+<details>
+<summary>查看真实任务完成界面</summary>
+
+![公开网页完成并提供下载的实际截图](docs/preview-result.jpg)
 
 </details>
 

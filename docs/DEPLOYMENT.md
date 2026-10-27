@@ -30,6 +30,11 @@ leave the root directory empty, use `/api/health`, and copy the backend environm
 variables from `render.yaml`. This route requires manual deployments when the
 dashboard does not offer automatic deploys for a public URL.
 
+The current public demo uses this public-repository route. Updates were published
+with **Manual Deploy → Deploy latest commit** after verification; Pages deploys
+automatically after CI. A green GitHub check alone does not prove Render pulled
+the new commit: confirm the service's live commit in the dashboard.
+
 ## Local development
 
 Start the backend from repository root with:
