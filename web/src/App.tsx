@@ -127,7 +127,7 @@ function App() {
           {(isTerminal || job?.status === 'completed') && <button className="text-button new-task" onClick={reset}>创建另一个任务 ↗</button>}
           {job?.status === 'completed' && !job.result && <p className="job-message">任务状态已完成，但下载信息暂不可用，请重新创建任务。</p>}
         </div>}
-        <div className="workspace-foot"><span><span className="tiny-lock">⌑</span> 链接只用于本次处理</span><span>支持公开分享链接</span></div>
+        <div className="workspace-foot"><span><span className="tiny-lock">⌑</span> 链接只用于本次处理</span><span>B站优先 · 其他站点实验支持</span></div>
       </section>
       <section id="how" className="how"><div className="how-title"><span className="section-index">A SIMPLE FLOW</span><h2>三步，听到你想要的</h2></div><div className="how-grid"><article><span className="how-num">01</span><h3>粘贴链接</h3><p>放入公开分享文字或链接，先确认音频来源。</p></article><article><span className="how-num">02</span><h3>选择参数</h3><p>挑选格式、比特率和声道，也可以保留来源文件。</p></article><article><span className="how-num">03</span><h3>创建并下载</h3><p>查看真实处理状态，完成后直接保存音频。</p></article></div></section>
     </main>
