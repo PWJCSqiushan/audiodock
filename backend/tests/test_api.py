@@ -1,5 +1,10 @@
 import hashlib
+import os
+import socket
 import secrets
+import subprocess
+import sys
+import time
 from datetime import datetime, timezone, timedelta
 from starlette.requests import Request
 
@@ -25,6 +30,77 @@ def test_health_contract():
     assert body["formats"] == ["mp3", "m4a", "opus", "flac", "wav", "original"]
 
 
+def test_request_body_limit_with_and_without_content_length(monkeypatch):
+    clear_state()
+    async def invoke(headers, chunks):
+        events=[{"type":"http.request","body":part,"more_body":i<len(chunks)-1} for i,part in enumerate(chunks)]
+        async def receive(): return events.pop(0) if events else {"type":"http.disconnect"}
+        sent=[]
+        async def send(message): sent.append(message)
+        async def endpoint(scope,recv,send):
+            body=bytearray()
+            while True:
+                msg=await recv()
+                if msg["type"]!="http.request": break
+                body.extend(msg.get("body",b""))
+                if not msg.get("more_body",False): break
+            await send({"type":"http.response.start","status":200,"headers":[]})
+            await send({"type":"http.response.body","body":bytes(body)})
+        scope={"type":"http","headers":headers}
+        await main.RequestBodyLimit(endpoint,main.MAX_REQUEST_BODY)(scope,receive,send)
+        return sent
+    async def exercise():
+        normal=await invoke([], [b'{"input":"https://youtu.be/abc"}'])
+        assert normal[0]["status"]==200
+        too_large=await invoke([(b"content-length",str(main.MAX_REQUEST_BODY+1).encode())],[b"x"])
+        assert too_large[0]["status"]==413 and b'"code":"size_limit"' in too_large[1]["body"]
+        chunked=await invoke([], [b"x"*8000,b"y"*9000])
+        assert chunked[0]["status"]==413 and b'"code":"size_limit"' in chunked[1]["body"]
+    def drive(coro):
+        try:
+            while True: coro.send(None)
+        except StopIteration as result: return result.value
+    drive(exercise())
+    clear_state()
+
+
+def test_uvicorn_process_starts_and_serves_health(tmp_path):
+    import pytest
+    if os.environ.get("AUDIODOCK_TEST_LOOPBACK")!="1": pytest.skip("loopback integration requires AUDIODOCK_TEST_LOOPBACK=1")
+    import requests
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port=listener.getsockname()[1]
+    env=os.environ.copy()
+    env["AUDIODOCK_RUNTIME_DIR"]=str(tmp_path/"runtime")
+    env["PYTHONPATH"]=str(__import__("pathlib").Path(__file__).resolve().parents[1])
+    proc=subprocess.Popen([sys.executable,"-m","uvicorn","app.main:app","--app-dir",str(__import__("pathlib").Path(__file__).resolve().parents[1]),"--host","127.0.0.1","--port",str(port),"--no-access-log","--no-proxy-headers"],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    try:
+        deadline=time.monotonic()+10
+        while time.monotonic()<deadline and proc.poll() is None:
+            try:
+                response=requests.get(f"http://127.0.0.1:{port}/api/health",timeout=0.5)
+                if response.status_code==200:
+                    assert response.json()["status"]=="ok"
+                    created=requests.post(f"http://127.0.0.1:{port}/api/jobs",json={"input":"https://youtu.be/test"},timeout=2)
+                    assert created.status_code==200 and created.json()["status"]=="queued"
+                    oversized=requests.post(f"http://127.0.0.1:{port}/api/jobs",data=b"x"*(main.MAX_REQUEST_BODY+1),headers={"content-type":"application/json"},timeout=2)
+                    assert oversized.status_code==413 and oversized.json()["detail"]["code"]=="size_limit"
+                    def pieces():
+                        yield b"x"*9000
+                        yield b"y"*9000
+                    chunked=requests.post(f"http://127.0.0.1:{port}/api/jobs",data=pieces(),headers={"content-type":"application/json"},timeout=2)
+                    assert chunked.status_code==413 and chunked.json()["detail"]["code"]=="size_limit"
+                    return
+            except requests.RequestException:
+                time.sleep(0.1)
+        raise AssertionError("uvicorn did not serve /api/health")
+    finally:
+        proc.terminate()
+        try: proc.wait(timeout=5)
+        except subprocess.TimeoutExpired: proc.kill(); proc.wait(timeout=5)
+
+
 def test_restricts_non_https_private_and_unknown_domains():
     for url, code in [("http://youtube.com/watch?v=x", "restricted"), ("https://127.0.0.1/video", "restricted"), ("https://example.org/video", "unsupported_site"), ("https://user:pw@youtube.com/watch?v=x", "restricted")]:
         try: main.safe_input(url)
@@ -37,6 +113,8 @@ def test_parameter_rules_and_queue_capacity():
     bad = main.create_job(main.JobBody(input="https://youtu.be/abc", format="mp3", bitrate=96), request())
     assert bad.status_code == 400
     assert __import__("json").loads(bad.body)["detail"]["code"] == "invalid_options"
+    bad_opus=main.create_job(main.JobBody(input="https://youtu.be/abc",format="opus",bitrate=96,sample_rate=44100),request("198.51.100.52"))
+    assert bad_opus.status_code==400 and __import__("json").loads(bad_opus.body)["detail"]["code"]=="invalid_options"
     for _ in range(5):
         main.work.put_nowait("occupied")
     full = main.create_job(main.JobBody(input="https://youtu.be/abc"), request())
@@ -61,6 +139,43 @@ def test_per_ip_limit_token_auth_cancel_and_expiry():
     j.update(status="completed", stage="completed", result={"filename":"a.mp3"}, expires_at=(datetime.now(timezone.utc)-timedelta(seconds=1)).isoformat())
     expired = main.get_job(item["id"], auth)
     assert expired["status"] == "expired" and expired["result"] is None
+    clear_state()
+
+
+def test_cancelled_queued_job_releases_queue_slot():
+    clear_state()
+    created=[main.create_job(main.JobBody(input="https://youtu.be/abc"),request(f"198.51.100.{60+i}")) for i in range(5)]
+    first=created[0]
+    assert main.cancel(first["id"],f"Bearer {first['token']}")["status"]=="cancelled"
+    next_job=main.create_job(main.JobBody(input="https://youtu.be/abc"),request("198.51.100.70"))
+    assert next_job["status"]=="queued"
+    assert main.work.qsize()==5
+    clear_state()
+
+
+def test_download_http_response_preserves_full_file_bytes(tmp_path, monkeypatch):
+    import pytest
+    if os.environ.get("AUDIODOCK_TEST_LOOPBACK")!="1": pytest.skip("async streaming integration requires AUDIODOCK_TEST_LOOPBACK=1")
+    import asyncio
+    clear_state()
+    monkeypatch.setattr(main,"DATA_DIR",tmp_path)
+    jid="download-bytes"
+    token="download-token"
+    payload=bytes(range(256))*4096
+    job_dir=tmp_path/"jobs"/jid
+    job_dir.mkdir(parents=True)
+    (job_dir/"audio.mp3").write_bytes(payload)
+    main.jobs[jid]={"id":jid,"token_hash":hashlib.sha256(token.encode()).hexdigest(),"status":"completed","stage":"completed","keep_original":False,"result":{"filename":"audio.mp3"},"expires_at":None}
+    async def exercise():
+        response=main.download(jid,token,"output")
+        sent=[]
+        async def send(message): sent.append(message)
+        async def receive(): await asyncio.Event().wait()
+        scope={"type":"http","method":"GET","path":f"/api/jobs/{jid}/download","headers":[],"query_string":b""}
+        await response(scope,receive,send)
+        assert sent[0]["status"]==200
+        assert b"".join(event.get("body",b"") for event in sent[1:])==payload
+    asyncio.run(exercise())
     clear_state()
 
 

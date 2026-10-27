@@ -12,10 +12,12 @@ import socket
 import subprocess
 import sys
 import threading
+from contextlib import contextmanager
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from datetime import datetime, timezone
+from functools import wraps
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, urljoin
@@ -32,6 +34,7 @@ VERSION = "0.1.0"
 MAX_DURATION = 3600
 MAX_SOURCE = 268435456
 MAX_OUTPUT = 786432000
+MAX_REQUEST_BODY = 16 * 1024
 QUEUE_SIZE = 5
 TTL = 1800
 JOB_TIMEOUT = 90 * 60
@@ -42,6 +45,42 @@ DATA_DIR = Path(os.environ.get("AUDIODOCK_RUNTIME_DIR", os.environ.get("AUDIODOC
 RECYCLE_DIR = DATA_DIR / "recycle"
 STORAGE_CAP = int(os.environ.get("AUDIODOCK_STORAGE_CAP_BYTES", str(2 * 1024**3)))
 app = FastAPI(title="AudioDock API", version=VERSION)
+
+class RequestBodyLimit:
+    def __init__(self, app, limit: int): self.app=app; self.limit=limit
+    async def __call__(self, scope, receive, send):
+        if scope["type"]!="http": return await self.app(scope,receive,send)
+        headers={k.lower():v for k,v in scope.get("headers",[])}
+        content_length=headers.get(b"content-length")
+        if content_length:
+            try: too_large=int(content_length)>self.limit
+            except ValueError: too_large=True
+            if too_large:
+                body=b'{"detail":{"code":"size_limit","message":"\xe8\xaf\xb7\xe6\xb1\x82\xe5\x86\x85\xe5\xae\xb9\xe8\xbf\x87\xe5\xa4\xa7"}}'
+                await send({"type":"http.response.start","status":413,"headers":[(b"content-type",b"application/json"),(b"content-length",str(len(body)).encode())]})
+                await send({"type":"http.response.body","body":body})
+                return
+        messages=[]; size=0
+        while True:
+            message=await receive()
+            if message["type"]!="http.request": break
+            size+=len(message.get("body",b""))
+            if size>self.limit:
+                body=b'{"detail":{"code":"size_limit","message":"\xe8\xaf\xb7\xe6\xb1\x82\xe5\x86\x85\xe5\xae\xb9\xe8\xbf\x87\xe5\xa4\xa7"}}'
+                await send({"type":"http.response.start","status":413,"headers":[(b"content-type",b"application/json"),(b"content-length",str(len(body)).encode())]})
+                await send({"type":"http.response.body","body":body})
+                return
+            messages.append(message)
+            if not message.get("more_body",False): break
+        index=0
+        async def replay():
+            nonlocal index
+            if index<len(messages):
+                current=messages[index]; index+=1; return current
+            return {"type":"http.disconnect"}
+        await self.app(scope,replay,send)
+
+app.add_middleware(RequestBodyLimit,limit=MAX_REQUEST_BODY)
 origins = {x.strip().rstrip("/") for x in os.environ.get("AUDIODOCK_ALLOWED_ORIGINS", "").split(",") if x.strip()}
 origins.update({"http://localhost:5173", "http://127.0.0.1:5173"})
 app.add_middleware(CORSMiddleware, allow_origins=sorted(origins), allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type"])
@@ -72,6 +111,20 @@ inspect_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="audiodo
 inspect_hits: dict[str,list[float]] = {}
 
 _ALLOWED_NETWORK_SUFFIXES=("bilibili.com","b23.tv","bilivideo.com","bilivideo.cn","hdslb.com","youtube.com","youtu.be","googlevideo.com","youtubei.googleapis.com","googleapis.com","ytimg.com","ggpht.com","vimeo.com","vimeocdn.com","akamaized.net","cloudfront.net")
+_network_context = threading.local()
+
+@contextmanager
+def _guarded_network():
+    depth=getattr(_network_context,"depth",0)
+    _network_context.depth=depth+1
+    try: yield
+    finally: _network_context.depth=depth
+
+def _guard_network(fn):
+    @wraps(fn)
+    def wrapped(*args, **kwargs):
+        with _guarded_network(): return fn(*args, **kwargs)
+    return wrapped
 
 def _is_public_ip(value: str) -> bool:
     try: ip=ipaddress.ip_address(value)
@@ -83,6 +136,7 @@ def _is_public_ip(value: str) -> bool:
     return ip.is_global and not ip.is_reserved and not ip.is_private and not ip.is_loopback and not ip.is_link_local and not ip.is_multicast and not ip.is_unspecified
 
 def _socket_guard(event: str, args: tuple[Any,...]) -> None:
+    if not getattr(_network_context,"depth",0): return
     if event == "socket.getaddrinfo":
         host,port=args[0],args[1]
         try: ip=ipaddress.ip_address(str(host))
@@ -166,6 +220,7 @@ class GuardedSession(requests.Session):
         kwargs["allow_redirects"] = False
         return super().request(method, url, **kwargs)
 
+@_guard_network
 def metadata(url: str, site: str, *, internal: bool = False) -> dict[str, Any]:
     if site == "bilibili":
         video_id = _bvid(url)
@@ -205,6 +260,7 @@ def options_ok(body: JobBody) -> str | None:
     allowed = {"mp3": {128,192,256,320}, "m4a": {128,192,256}, "opus": {64,96,128,160}, "flac": {0}, "wav": {0}, "original": {0}}
     if body.format not in allowed or body.bitrate not in allowed.get(body.format, set()): return "invalid_options"
     if body.sample_rate not in (0, 44100, 48000) or body.channels not in (0,1,2): return "invalid_options"
+    if body.format == "opus" and body.sample_rate == 44100: return "invalid_options"
     if body.format == "original" and (body.sample_rate or body.channels): return "invalid_options"
     return None
 
@@ -220,6 +276,15 @@ def _queue_position(job_id: str) -> int | None:
         try: return list(work.queue).index(job_id) + 1
         except ValueError: return None
 
+def _remove_queued(job_id: str) -> bool:
+    with work.mutex:
+        try: work.queue.remove(job_id)
+        except ValueError: return False
+        work.unfinished_tasks-=1
+        if work.unfinished_tasks==0: work.all_tasks_done.notify_all()
+        work.not_full.notify()
+        return True
+
 def _public_job(j: dict[str, Any]) -> dict[str, Any]:
     pos = _queue_position(j["id"]) if j["status"] == "queued" else None
     return {k: j.get(k) for k in ("id","status","stage","progress","title","message","created_at","expires_at","result")} | {"queue_position": pos}
@@ -229,8 +294,9 @@ def _storage_used() -> int:
     total=0
     for path in DATA_DIR.rglob("*"):
         try:
-            if path.is_file(): total+=path.stat().st_size
-        except OSError:
+            info=path.stat()
+            if path.is_file(): total+=info.st_size
+        except (OSError, RuntimeError):
             continue
     return total
 
@@ -332,6 +398,7 @@ def _bili_download(url: str, dest: Path, j: dict[str, Any], meta: dict[str, Any]
         _recycle_file(dest,f"{j['id']}-partial")
     raise RuntimeError("upstream_unavailable") from last
 
+@_guard_network
 def _download_source(j: dict[str, Any], src: Path, preflight: dict[str, Any]) -> tuple[dict[str, Any], Path]:
     url,site,_=safe_input(j["input"])
     if site == "bilibili":
@@ -490,11 +557,6 @@ def startup():
     if not worker_started:
         threading.Thread(target=_worker,name="audiodock-worker",daemon=True).start(); worker_started=True
 
-@app.middleware("http")
-async def redact_queries(request: Request, call_next):
-    # Do not log URLs or query parameters; no access logger is enabled by default.
-    return await call_next(request)
-
 @app.get("/api/health")
 def health():
     return {"status":"ok","version":VERSION,"ffmpeg_available":shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None,"limits":{"max_duration_seconds":MAX_DURATION,"max_source_bytes":MAX_SOURCE,"max_output_bytes":MAX_OUTPUT,"max_queue":QUEUE_SIZE,"jobs_per_hour":3},"sites":[{"id":"bilibili","name":"哔哩哔哩","status":"available"}],"formats":FORMATS}
@@ -557,6 +619,7 @@ def cancel(job_id: str, authorization: str | None = Header(default=None)):
     if j["status"] in ("completed","failed","cancelled","expired"): return {"id":job_id,"status":j["status"]}
     j["cancel_requested"]=True
     if j["status"] == "queued":
+        _remove_queued(job_id)
         j.update(status="cancelled",stage="cancelled",progress=None,message="任务已取消")
         _move_recycle(j)
     with lock:

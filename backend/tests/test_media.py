@@ -75,7 +75,7 @@ def test_bilibili_range_download_resumes_without_corrupting_partial_chunk(tmp_pa
     monkeypatch.setattr(main,"GuardedSession",Session)
     monkeypatch.setattr(main,"public_host",lambda host:True)
     dest=tmp_path/"source.m4a"
-    job={"id":"range-test","deadline":main.time.time()+60,"progress":None}
+    job={"id":"range-test","input":"https://www.bilibili.com/video/BV1234567890","deadline":main.time.time()+60,"progress":None}
     meta,_=main._bili_download("https://www.bilibili.com/video/BV1234567890",dest,job,{"id":"BV1234567890","title":"unit","_cid":8})
     assert meta["title"]=="unit"
     assert dest.read_bytes()==payload
@@ -89,9 +89,16 @@ def test_network_guard_rejects_private_and_special_ip_ranges(address):
 
 
 def test_network_guard_rejects_unknown_hosts_and_non_https_ports():
-    with pytest.raises(PermissionError): main._socket_guard("socket.getaddrinfo", ("evil.example", 443, 0, 1, 0, 0))
-    with pytest.raises(PermissionError): main._socket_guard("socket.getaddrinfo", ("youtube.com", 80, 0, 1, 0, 0))
-    with pytest.raises(PermissionError): main._socket_guard("socket.connect", (None, ("10.0.0.1", 443)))
+    with main._guarded_network():
+        with pytest.raises(PermissionError): main._socket_guard("socket.getaddrinfo", ("evil.example", 443, 0, 1, 0, 0))
+        with pytest.raises(PermissionError): main._socket_guard("socket.getaddrinfo", ("youtube.com", 80, 0, 1, 0, 0))
+        with pytest.raises(PermissionError): main._socket_guard("socket.connect", (None, ("10.0.0.1", 443)))
+
+
+def test_guarded_network_context_blocks_real_loopback_connection():
+    import socket
+    with main._guarded_network():
+        with pytest.raises(PermissionError): socket.create_connection(("127.0.0.1", 443), timeout=0.1)
 
 
 @pytest.mark.parametrize("protocol,accepted", [("https", True), ("m3u8_native", False)])
