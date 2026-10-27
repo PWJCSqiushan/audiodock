@@ -92,5 +92,8 @@ from the versioned requirements file, not a downloaded all-in-one executable.
   actual audio download, conversion and browser delivery separately.
 - A 412, 403, login request or region error from a platform must remain a clear
   upstream error. Do not insert third-party credentials or publicly shared proxies.
+- Some local proxy tools return Fake-IP addresses in `198.18.0.0/15`. The public-IP
+  guard intentionally rejects those targets. Do not allow private/reserved ranges
+  to make such a network work; test from a network with normal public DNS instead.
 - Restarting a free instance can expire an in-flight job. The interface should
   explain the lost job and allow a new one, without pretending the old one succeeded.

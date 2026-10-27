@@ -132,6 +132,9 @@ npm run build
 `AUDIODOCK_TEST_LOOPBACK=1`（PowerShell：`$env:AUDIODOCK_TEST_LOOPBACK="1"`）。CI 会启用这两项测试。
 后端启动后，可运行 `python scripts/smoke_test.py "视频链接" --output artifacts/check.mp3`
 完成真实任务、下载哈希与完整解码检查；它会消耗正常任务额度。
+脚本会在输出旁保存私有的 `.job.json` 断点，下载请求失败后用同一命令可继续查询原任务。
+断点含临时下载令牌，请勿公开或提交；默认 `artifacts/` 已被忽略。
+需要单独排查环境代理时可加 `--no-proxy`，它只影响这一次脚本进程。
 
 ## 致谢
 
