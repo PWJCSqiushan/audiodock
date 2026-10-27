@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: audiodock-api
+    runtime: docker
+    plan: free
+    region: singapore
+    branch: main
+    healthCheckPath: /api/health
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: AUDIODOCK_ALLOWED_ORIGINS
+        value: https://pwjcsqiushan.github.io
+      - key: AUDIODOCK_RUNTIME_DIR
+        value: /tmp/audiodock
+      - key: AUDIODOCK_TRUST_PROXY
+        value: "true"

@@ -1,0 +1,12 @@
+services:
+  api:
+    build: .
+    ports:
+      - "127.0.0.1:8787:10000"
+    environment:
+      AUDIODOCK_ALLOWED_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+      AUDIODOCK_TRUST_PROXY: "false"
+    volumes:
+      - audiodock-runtime:/tmp/audiodock
+volumes:
+  audiodock-runtime:

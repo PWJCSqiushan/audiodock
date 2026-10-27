@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="400" viewBox="0 0 1280 400" role="img" aria-labelledby="t d">
+  <title id="t">AudioDock 音频坞</title><desc id="d">粘贴视频链接，带走想要的声音。暗色背景上的青绿色声波。</desc>
+  <defs><linearGradient id="bg"><stop stop-color="#071820"/><stop offset="1" stop-color="#0b1020"/></linearGradient><linearGradient id="wave"><stop stop-color="#5ce5bb"/><stop offset="1" stop-color="#65bfff"/></linearGradient><pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse"><path d="M48 0H0V48" fill="none" stroke="#b7e9e0" stroke-opacity=".045"/></pattern></defs>
+  <rect width="1280" height="400" rx="24" fill="url(#bg)"/><rect width="1280" height="400" rx="24" fill="url(#grid)"/>
+  <rect x="66" y="62" width="118" height="29" rx="14" fill="#183830"/><circle cx="82" cy="76" r="3" fill="#6ee4b8"/><text x="94" y="81" fill="#9cddc7" font-family="Arial,sans-serif" font-size="12" letter-spacing="2">OPEN SOURCE</text>
+  <text x="64" y="180" fill="#f0f7f5" font-family="Arial,sans-serif" font-size="76" font-weight="700" letter-spacing="-3">AudioDock<tspan font-size="30" fill="#91a8b0" letter-spacing="2"> / 音频坞</tspan></text>
+  <text x="67" y="239" fill="#adbdc4" font-family="Arial,Microsoft YaHei,sans-serif" font-size="25">粘贴视频链接，带走想要的声音。</text>
+  <text x="67" y="323" fill="#6b9295" font-family="Arial,sans-serif" font-size="14" letter-spacing="3">LINK → EXTRACT → CONVERT → LISTEN</text>
+  <g stroke="url(#wave)" stroke-width="9" stroke-linecap="round" opacity=".95">
+    <path d="M860 180v42M883 154v94M906 132v138M929 160v82M952 111v180M975 136v130M998 157v88M1021 88v226M1044 122v158M1067 148v106M1090 171v60M1113 140v122M1136 164v74M1159 181v40"/>
+  </g><path d="M840 348h348" stroke="#31545a"/><text x="840" y="373" fill="#6b9295" font-size="11" font-family="Arial,sans-serif" letter-spacing="3">YOUR AUDIO. YOUR FORMAT.</text>
+</svg>
