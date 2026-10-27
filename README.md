@@ -28,6 +28,15 @@ AudioDock 是一个开源的视频链接转音频工具。复制分享文字或�
 | 文件真正属于你 | 下载成普通音频文件，也可以同时保留原始音轨 |
 | 自己也能运行 | 源码、本地运行和容器部署配置都在仓库内 |
 
+![AudioDock 桌面界面实拍](docs/preview-desktop.jpg)
+
+<details>
+<summary>查看手机界面</summary>
+
+<img src="docs/preview-mobile.jpg" width="300" alt="AudioDock 手机界面实拍" />
+
+</details>
+
 ## 三步带走音频
 
 1. 打开 [AudioDock](https://pwjcsqiushan.github.io/audiodock/)，粘贴视频链接或平台的整段分享文字。

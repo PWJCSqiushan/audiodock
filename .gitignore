@@ -4,6 +4,8 @@ dist/
 __pycache__/
 .pytest_cache/
 *.pyc
+*.tsbuildinfo
+tmp/
 .env
 .env.*
 !.env.example
@@ -16,5 +18,8 @@ test-results/
 *.flac
 *.wav
 *.opus
+*.webm
+*.mp4
+*.aac
 *.part
 *.log
