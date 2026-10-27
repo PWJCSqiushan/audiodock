@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ApiError, bitratesFor, buildJobOptions, cancelJob, checkHealth, createJob, downloadUrl, formatLabels, friendlyError, getJob, inspectInput, type AudioFormat, type Job, type SavedJob, type SourceInfo } from './api'
+import { ApiError, bitratesFor, buildJobOptions, cancelJob, checkHealth, createJob, downloadUrl, formatLabels, friendlyError, getJob, inspectInput, secureKnownBiliThumbnail, type AudioFormat, type Job, type SavedJob, type SourceInfo } from './api'
 
 const stageText: Record<string, string> = { queued: '排队中', resolving: '读取来源', downloading: '获取音频', converting: '转换格式', verifying: '校验文件', completed: '已完成', failed: '处理失败', cancelled: '已取消', expired: '已过期' }
 const stageOrder = ['queued', 'resolving', 'downloading', 'converting', 'verifying', 'completed']
@@ -27,6 +27,7 @@ function App() {
   const [busy, setBusy] = useState<'inspect' | 'create' | 'cancel' | ''>('')
   const [warming, setWarming] = useState(false)
   const [error, setError] = useState('')
+  const [errorContext, setErrorContext] = useState<'inspect' | 'create' | 'cancel' | 'query' | ''>('')
   const [healthState, setHealthState] = useState<'unknown' | 'checking' | 'ready' | 'offline'>('unknown')
   const choices = useMemo(() => bitratesFor(format), [format])
   const activeJob = Boolean(jobRef && (!job || job.status === 'queued' || job.status === 'running'))
@@ -44,12 +45,13 @@ function App() {
       try {
         const next = await getJob(jobRef)
         if (active) {
-          setJob(next); setError('')
+          setJob(next); setError(''); setErrorContext('')
           if (['completed', 'failed', 'cancelled', 'expired'].includes(next.status)) keepPolling = false
         }
       } catch (e) {
         if (active) {
           setError(friendlyError(e))
+          setErrorContext('query')
           if (e instanceof ApiError && (e.code === 'expired' || e.status === 404 || e.status === 410)) {
             keepPolling = false; setJob(null); setJobRef(null); sessionStorage.removeItem('audiodock-job')
           }
@@ -64,14 +66,14 @@ function App() {
   const showError = (e: unknown) => setError(friendlyError(e))
   const onInspect = async () => {
     if (!input.trim() || busy) return
-    setBusy('inspect'); setError(''); setSource(null); setJob(null); setJobRef(null); sessionStorage.removeItem('audiodock-job')
+    setBusy('inspect'); setError(''); setErrorContext(''); setSource(null); setJob(null); setJobRef(null); sessionStorage.removeItem('audiodock-job')
     setWarming(true); setHealthState('checking')
     let serviceReady = false
     try {
       await checkHealth(); serviceReady = true; setHealthState('ready'); setWarming(false)
       const result = await inspectInput(input)
       setSource(result)
-    } catch (e) { if (!serviceReady) setHealthState('offline'); showError(e) }
+    } catch (e) { if (!serviceReady) setHealthState('offline'); setErrorContext('inspect'); showError(e) }
     finally { setWarming(false); setBusy('') }
   }
   const onCreate = async () => {
@@ -81,17 +83,17 @@ function App() {
       const created = await createJob(buildJobOptions(source.url, format, bitrate, sampleRate, channels, keepOriginal))
       const saved = { id: created.id, token: created.token }
       setJobRef(saved); sessionStorage.setItem('audiodock-job', JSON.stringify(saved))
-    } catch (e) { showError(e) }
+    } catch (e) { setErrorContext('create'); showError(e) }
     finally { setBusy('') }
   }
   const onCancel = async () => {
     if (!jobRef || busy) return
     setBusy('cancel'); setError('')
     try { await cancelJob(jobRef); const updated = await getJob(jobRef); setJob(updated) }
-    catch (e) { showError(e) }
+    catch (e) { setErrorContext('cancel'); showError(e) }
     finally { setBusy('') }
   }
-  const reset = () => { setSource(null); setJob(null); setJobRef(null); setError(''); setInput(''); sessionStorage.removeItem('audiodock-job') }
+  const reset = () => { setSource(null); setJob(null); setJobRef(null); setError(''); setErrorContext(''); setInput(''); sessionStorage.removeItem('audiodock-job') }
   const submitEnabled = Boolean(input.trim()) && !busy && !activeJob
   const progress = typeof job?.progress === 'number' ? Math.max(0, Math.min(100, job.progress)) : null
   const currentStep = job ? stageOrder.indexOf(job.stage) : -1
@@ -106,8 +108,8 @@ function App() {
         <div className="work-head"><div><span className="section-index">01 / SOURCE</span><h2>放入一个分享链接</h2></div><div className={`service-pill ${healthState}`}><span className="service-dot"/>{healthState === 'ready' ? '服务已就绪' : healthState === 'checking' ? '正在唤醒服务' : healthState === 'offline' ? '暂时无法连接' : '等待连接'}</div></div>
         <div className="url-row"><div className="url-icon"><svg viewBox="0 0 24 24" fill="none"><path d="M10 13.5a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1.7 1.7M14 10.5a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 12 19.2l1.7-1.7" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/></svg></div><input aria-label="分享链接或文字" placeholder="粘贴哔哩哔哩、YouTube 或 Vimeo 分享链接" value={input} disabled={busy === 'create' || activeJob} onChange={e => { setInput(e.target.value); if (source) setSource(null) }} onKeyDown={e => { if (e.key === 'Enter') void onInspect() }} /><button className="inspect-button" disabled={!submitEnabled} onClick={() => void onInspect()}>{busy === 'inspect' ? <><span className="spinner"/> {warming ? '连接服务…' : '正在解析…'}</> : <>解析链接 <span>↗</span></>}</button></div>
         {warming && <div className="warm-note"><span className="spinner"/> 音频坞正在启动，首次连接可能需要一点时间。请保持此页面打开。</div>}
-        {error && <div className="alert" role="alert"><span className="alert-symbol">!</span><span>{error}</span><button onClick={() => { setError(''); if (healthState === 'offline') void onInspect() }}>重试</button></div>}
-        {source && !jobRef && <div className="source-card"><div className="source-art">{source.thumbnail ? <img src={source.thumbnail} alt=""/> : <div className="cover-placeholder"><Waveform/></div>}<span className="duration">{typeof source.duration === 'number' ? formatTime(source.duration) : '时长未知'}</span></div><div className="source-meta"><div className="source-kicker"><span className="source-dot"/>{source.site}</div><h3>{source.title}</h3><p>{source.uploader || '公开分享内容'}</p><button className="text-button" onClick={() => setSource(null)}>更换链接</button></div><div className="ready-tag">✓ 已识别</div></div>}
+        {error && <div className="alert" role="alert"><span className="alert-symbol">!</span><span>{error}</span><button onClick={() => { if (errorContext === 'inspect' && !jobRef && !activeJob) void onInspect(); else { setError(''); setErrorContext('') } }}>{errorContext === 'inspect' && !jobRef && !activeJob ? '重新解析' : '关闭提示'}</button></div>}
+        {source && !jobRef && <div className="source-card"><div className="source-art">{source.thumbnail ? <img src={secureKnownBiliThumbnail(source.thumbnail)} alt=""/> : <div className="cover-placeholder"><Waveform/></div>}<span className="duration">{typeof source.duration === 'number' ? formatTime(source.duration) : '时长未知'}</span></div><div className="source-meta"><div className="source-kicker"><span className="source-dot"/>{source.site}</div><h3>{source.title}</h3><p>{source.uploader || '公开分享内容'}</p><button className="text-button" onClick={() => setSource(null)}>更换链接</button></div><div className="ready-tag">✓ 已识别</div></div>}
         {source && !jobRef && <div className="options"><div className="work-head option-heading"><div><span className="section-index">02 / FORMAT</span><h2>选择输出方式</h2></div><span className="option-note">适合你就好，不必追求更高数字</span></div>
           <div className="format-grid" role="group" aria-label="输出格式">{(['mp3','m4a','opus','flac','wav','original'] as AudioFormat[]).map((f, i) => <button key={f} className={`format-card ${format === f ? 'selected' : ''}`} onClick={() => { setFormat(f); if (f === 'mp3') setBitrate(320); else if (f === 'm4a') setBitrate(192); else if (f === 'opus') { setBitrate(128); if (sampleRate === 44100) setSampleRate(0) } }} aria-pressed={format === f}><span className="format-symbol">{['M','A','O','F','W','↗'][i]}</span><span className="format-name">{formatLabels[f]}</span><span className="format-check">✓</span></button>)}</div>
           {format === 'original' ? <div className="original-note"><span>↗</span><div><strong>保留原始音频</strong><p>直接保存来源文件，不重新编码，也不调整采样率或声道。</p></div></div> : <div className="parameter-row"><label className="field"><span>比特率</span><select value={choices.length ? bitrate : 0} disabled={!choices.length} onChange={e => setBitrate(Number(e.target.value))}>{choices.length ? choices.map(v => <option key={v} value={v}>{v} kbps</option>) : <option value={0}>此格式无需比特率</option>}</select></label><label className="field"><span>采样率</span><select value={sampleRate} onChange={e => setSampleRate(Number(e.target.value))}><option value={0}>来源采样率</option>{format !== 'opus' && <option value={44100}>44.1 kHz</option>}<option value={48000}>48 kHz</option></select></label><label className="field"><span>声道</span><select value={channels} onChange={e => setChannels(Number(e.target.value))}><option value={0}>来源声道</option><option value={2}>立体声</option><option value={1}>单声道</option></select></label></div>}

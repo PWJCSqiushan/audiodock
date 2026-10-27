@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ApiError, bitratesFor, buildJobOptions, downloadUrl, friendlyError } from './api'
+import { ApiError, bitratesFor, buildJobOptions, downloadUrl, friendlyError, secureKnownBiliThumbnail } from './api'
 
 describe('format-dependent options', () => {
   it.each([
@@ -33,5 +33,11 @@ describe('user-facing API states', () => {
 
   it('builds an attachment URL with the job token and requested kind', () => {
     expect(downloadUrl({ id: 'job / 1', token: 'a+b' }, 'source')).toContain('/api/jobs/job%20%2F%201/download?token=a%2Bb&kind=source')
+  })
+
+  it('upgrades only known Bilibili image hosts to HTTPS', () => {
+    expect(secureKnownBiliThumbnail('http://i1.hdslb.com/bfs/archive/cover.jpg')).toBe('https://i1.hdslb.com/bfs/archive/cover.jpg')
+    expect(secureKnownBiliThumbnail('http://images.example.org/cover.jpg')).toBe('http://images.example.org/cover.jpg')
+    expect(secureKnownBiliThumbnail('https://i1.hdslb.com/bfs/archive/cover.jpg')).toBe('https://i1.hdslb.com/bfs/archive/cover.jpg')
   })
 })

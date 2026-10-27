@@ -66,18 +66,55 @@ describe('AudioDock task flow', () => {
     expect(screen.queryByText(/\d+%/)).not.toBeInTheDocument()
   })
 
-  it('shows the backend validation error without presenting a source as recognized', async () => {
+  it('retries a failed inspection and shows the recognized source after the real retry succeeds', async () => {
+    let inspectCount = 0
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
       if (url.endsWith('/api/health')) return Response.json({ status: 'ok' })
-      if (url.endsWith('/api/inspect')) return Response.json({ detail: { code: 'unsupported_site', message: '暂不支持这个站点。' } }, { status: 400 })
+      if (url.endsWith('/api/inspect')) {
+        inspectCount++
+        if (inspectCount === 1) return Response.json({ detail: { code: 'upstream_unavailable', message: '来源暂时无法访问。' } }, { status: 503 })
+        return Response.json({ url: 'https://youtu.be/abc', site: 'YouTube', id: 'abc', title: 'Retry succeeded', uploader: 'Example', duration: 42 })
+      }
       throw new Error('Unexpected API request')
     }))
     render(<App />)
     fireEvent.change(screen.getByLabelText('分享链接或文字'), { target: { value: 'https://example.org/audio' } })
     fireEvent.click(screen.getByRole('button', { name: /解析链接/ }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('暂不支持这个分享来源。')
+    expect(await screen.findByRole('alert')).toHaveTextContent('来源暂时无法访问，请过一会儿重试。')
     expect(screen.getByText('服务已就绪')).toBeInTheDocument()
     expect(screen.queryByText('✓ 已识别')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '重新解析' }))
+    expect(await screen.findByText('Retry succeeded')).toBeInTheDocument()
+    expect(inspectCount).toBe(2)
+  })
+
+  it('only closes a task status error instead of starting another inspection', async () => {
+    let inspectCount = 0
+    let jobCount = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const url = String(input)
+      if (url.endsWith('/api/health')) return Response.json({ status: 'ok' })
+      if (url.endsWith('/api/inspect')) {
+        inspectCount++
+        return Response.json({ url: 'https://youtu.be/abc', site: 'YouTube', id: 'abc', title: 'A sample episode', uploader: 'Example', duration: 42 })
+      }
+      if (url.endsWith('/api/jobs') && init.method === 'POST') return Response.json({ id: 'job-error', token: 'token', status: 'queued' })
+      if (url.includes('/api/jobs/job-error')) {
+        jobCount++
+        return Response.json({ detail: { code: 'processing_failed', message: '服务暂时不可用。' } }, { status: 503 })
+      }
+      throw new Error('Unexpected API request')
+    }))
+    render(<App />)
+    fireEvent.change(screen.getByLabelText('分享链接或文字'), { target: { value: 'https://youtu.be/abc' } })
+    fireEvent.click(screen.getByRole('button', { name: /解析链接/ }))
+    await screen.findByText('A sample episode')
+    fireEvent.click(screen.getByRole('button', { name: /创建音频任务/ }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('服务暂时不可用。')
+    expect(screen.getByRole('button', { name: '关闭提示' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '关闭提示' }))
+    expect(inspectCount).toBe(1)
+    expect(jobCount).toBe(1)
   })
 })

@@ -14,6 +14,16 @@ export const bitratesFor = (format: AudioFormat) => bitrateChoices[format]
 export const formatLabels: Record<AudioFormat, string> = { mp3: 'MP3', m4a: 'M4A · AAC', opus: 'OPUS', flac: 'FLAC', wav: 'WAV', original: '原始文件' }
 export const canAdjustSource = (format: AudioFormat) => format !== 'original'
 
+export function secureKnownBiliThumbnail(thumbnail: string | null | undefined): string | undefined {
+  if (!thumbnail) return undefined
+  try {
+    const url = new URL(thumbnail)
+    const host = url.hostname.toLowerCase()
+    if (url.protocol === 'http:' && (host === 'hdslb.com' || host.endsWith('.hdslb.com'))) url.protocol = 'https:'
+    return url.toString()
+  } catch { return thumbnail }
+}
+
 export function buildJobOptions(input: string, format: AudioFormat, bitrate: number, sampleRate: number, channels: number, keepOriginal: boolean): JobOptions {
   const reencodes = format !== 'original'
   return {
