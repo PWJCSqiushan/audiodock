@@ -169,9 +169,8 @@ def test_cancelled_queued_job_releases_queue_slot():
 
 
 def test_download_http_response_preserves_full_file_bytes(tmp_path, monkeypatch):
-    import pytest
-    if os.environ.get("AUDIODOCK_TEST_LOOPBACK")!="1": pytest.skip("async streaming integration requires AUDIODOCK_TEST_LOOPBACK=1")
     import asyncio
+    from urllib.parse import urlencode
     clear_state()
     monkeypatch.setattr(main,"DATA_DIR",tmp_path)
     jid="download-bytes"
@@ -182,14 +181,35 @@ def test_download_http_response_preserves_full_file_bytes(tmp_path, monkeypatch)
     (job_dir/"audio.mp3").write_bytes(payload)
     main.jobs[jid]={"id":jid,"token_hash":hashlib.sha256(token.encode()).hexdigest(),"status":"completed","stage":"completed","keep_original":False,"result":{"filename":"audio.mp3"},"expires_at":None}
     async def exercise():
-        response=main.download(jid,token,"output")
         sent=[]
+        request_sent=False
+        disconnected=False
+        receive_waiting=asyncio.Event()
+        disconnect=asyncio.Event()
         async def send(message): sent.append(message)
-        async def receive(): await asyncio.Event().wait()
-        scope={"type":"http","method":"GET","path":f"/api/jobs/{jid}/download","headers":[],"query_string":b""}
-        await response(scope,receive,send)
+        async def receive():
+            nonlocal request_sent,disconnected
+            if not request_sent:
+                request_sent=True
+                return {"type":"http.request","body":b"","more_body":False}
+            receive_waiting.set()
+            await disconnect.wait()
+            disconnected=True
+            return {"type":"http.disconnect"}
+        path=f"/api/jobs/{jid}/download"
+        scope={"type":"http","asgi":{"version":"3.0","spec_version":"2.3"},"http_version":"1.1","method":"GET","scheme":"http","path":path,"raw_path":path.encode(),"root_path":"","query_string":urlencode({"token":token}).encode(),"headers":[(b"host",b"test")],"client":("127.0.0.1",12345),"server":("127.0.0.1",80)}
+        app_task=asyncio.create_task(main.app(scope,receive,send))
+        try:
+            await asyncio.wait_for(receive_waiting.wait(),2)
+            await asyncio.wait_for(app_task,5)
+        finally:
+            disconnect.set()
+            if not app_task.done(): await app_task
         assert sent[0]["status"]==200
-        assert b"".join(event.get("body",b"") for event in sent[1:])==payload
+        streamed=b"".join(event.get("body",b"") for event in sent[1:])
+        assert len(streamed)==1024*1024
+        assert hashlib.sha256(streamed).digest()==hashlib.sha256(payload).digest()
+        assert not disconnected
     asyncio.run(exercise())
     clear_state()
 

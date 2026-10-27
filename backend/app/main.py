@@ -95,7 +95,7 @@ class RequestBodyLimit:
             nonlocal index
             if index<len(messages):
                 current=messages[index]; index+=1; return current
-            return {"type":"http.disconnect"}
+            return await receive()
         await self.app(scope,replay,send)
 
 app.add_middleware(RequestBodyLimit,limit=MAX_REQUEST_BODY)
