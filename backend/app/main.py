@@ -252,7 +252,8 @@ def metadata(url: str, site: str, *, internal: bool = False) -> dict[str, Any]:
         if not video_id:
             _log_upstream("bili_shortlink",exc=RuntimeError())
             raise RuntimeError("upstream_unavailable")
-        s = GuardedSession(); s.headers.update({"User-Agent": "Mozilla/5.0 AudioDock/0.1", "Referer": url})
+        canonical_url=f"https://www.bilibili.com/video/{video_id}"
+        s = GuardedSession(); s.headers.update({"User-Agent": "Mozilla/5.0 AudioDock/0.1", "Referer": canonical_url})
         endpoint = "https://api.bilibili.com/x/web-interface/wbi/view/detail"
         try: resp = s.get(endpoint, params={"bvid": video_id, "platform": "web"}, timeout=15)
         except Exception as exc:
@@ -270,7 +271,7 @@ def metadata(url: str, site: str, *, internal: bool = False) -> dict[str, Any]:
         if not view:
             _log_upstream("bili_view_detail",status=resp.status_code,bili_code=data.get("code") if isinstance(data.get("code"),int) else None)
             raise RuntimeError("upstream_unavailable")
-        result = {"url": url, "site": site, "id": video_id, "title": str(view.get("title", ""))[:300], "uploader": str(view.get("owner", {}).get("name", ""))[:100], "duration": int(view.get("duration", 0)), "thumbnail": view.get("pic")}
+        result = {"url": canonical_url, "site": site, "id": video_id, "title": str(view.get("title", ""))[:300], "uploader": str(view.get("owner", {}).get("name", ""))[:100], "duration": int(view.get("duration", 0)), "thumbnail": view.get("pic")}
         if internal: result["_cid"] = view.get("cid")
         return result
     if not public_host(urlparse(url).hostname or ""): raise RuntimeError("upstream_unavailable")
@@ -382,7 +383,8 @@ def _stop_process(proc: subprocess.Popen) -> None:
 
 def _bili_download(url: str, dest: Path, j: dict[str, Any], meta: dict[str, Any]) -> tuple[dict[str, Any], str]:
     bv = meta["id"]
-    s = GuardedSession(); s.headers.update({"User-Agent": "Mozilla/5.0", "Referer": url})
+    video_url=f"https://www.bilibili.com/video/{bv}"
+    s = GuardedSession(); s.headers.update({"User-Agent": "Mozilla/5.0", "Referer": video_url})
     cid = meta.get("_cid")
     if not cid:
         _log_upstream("bili_playurl",exc=RuntimeError())

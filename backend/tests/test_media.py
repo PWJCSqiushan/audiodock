@@ -122,6 +122,38 @@ def test_upstream_diagnostics_log_only_safe_fields(monkeypatch, caplog, tmp_path
     assert "https://" not in messages
 
 
+def test_bilibili_shortlink_uses_canonical_page_referer(monkeypatch, tmp_path, caplog):
+    import logging
+    canonical="https://www.bilibili.com/video/BV1234567890"
+    requests_seen=[]
+
+    class Response:
+        def __init__(self,status_code,headers=None,payload=None):
+            self.status_code=status_code; self.headers=headers or {}; self.is_redirect=status_code in (301,302,303,307,308); self._payload=payload
+        def json(self): return self._payload
+
+    class Session:
+        def __init__(self): self.headers={}
+        def get(self,url,**kwargs):
+            requests_seen.append((url,dict(self.headers)))
+            if "b23.tv" in url: return Response(302,{"Location":canonical})
+            if url.endswith("view/detail"):
+                return Response(200,payload={"code":0,"data":{"View":{"title":"demo","cid":9,"duration":3,"owner":{"name":"u"}}}})
+            if url.endswith("playurl"): return Response(403,payload={"code":-403})
+            raise AssertionError("unexpected mocked request")
+
+    monkeypatch.setattr(main,"GuardedSession",Session)
+    with caplog.at_level(logging.WARNING,logger="audiodock.upstream"):
+        meta=main.metadata("https://b23.tv/SHORT", "bilibili", internal=True)
+        assert meta["url"]==canonical
+        with pytest.raises(RuntimeError,match="upstream_unavailable"):
+            main._bili_download("https://b23.tv/SHORT",tmp_path/"source.m4a",{"id":meta["id"]},{"id":meta["id"],"_cid":meta["_cid"],"url":"https://b23.tv/SHORT"})
+    assert requests_seen[0][0]=="https://b23.tv/SHORT"
+    api_requests=[headers for url,headers in requests_seen if url.endswith("view/detail") or url.endswith("playurl")]
+    assert len(api_requests)==2
+    assert all(headers["Referer"]==canonical for headers in api_requests)
+
+
 def test_guarded_network_context_blocks_real_loopback_connection():
     import socket
     with main._guarded_network():
