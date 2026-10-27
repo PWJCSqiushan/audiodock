@@ -95,6 +95,33 @@ def test_network_guard_rejects_unknown_hosts_and_non_https_ports():
         with pytest.raises(PermissionError): main._socket_guard("socket.connect", (None, ("10.0.0.1", 443)))
 
 
+def test_upstream_diagnostics_log_only_safe_fields(monkeypatch, caplog, tmp_path):
+    import logging
+
+    class Session:
+        def __init__(self): self.headers={}
+        def get(self, url, **kwargs):
+            return type("Response",(),{"status_code":200,"headers":{},"is_redirect":False,"json":lambda self:{"code":-352,"data":{}}})()
+
+    monkeypatch.setattr(main,"GuardedSession",Session)
+    with caplog.at_level(logging.WARNING,logger="audiodock.upstream"):
+        assert main._bvid("https://b23.tv/SHORT_SECRET") is None
+        with pytest.raises(RuntimeError,match="upstream_unavailable"):
+            main.metadata("https://www.bilibili.com/video/BV1234567890?token=SECRET_QUERY&sign=SECRET_SIG","bilibili")
+        with pytest.raises(RuntimeError,match="upstream_unavailable"):
+            main._bili_download("https://www.bilibili.com/video/BV1234567890",tmp_path/"source.m4a",{"id":"BV1234567890"},{"id":"BV1234567890","_cid":7})
+        with pytest.raises(PermissionError):
+            with main._guarded_network():
+                main._socket_guard("socket.connect",(None,("198.18.0.1",443)))
+    messages="\n".join(record.getMessage() for record in caplog.records)
+    assert "stage=bili_view_detail" in messages and "bili_code=-352" in messages
+    assert "stage=bili_shortlink" in messages and "http_status=200" in messages
+    assert "stage=bili_playurl" in messages and "stage=network_guard" in messages
+    assert "SECRET_QUERY" not in messages and "SECRET_SIG" not in messages
+    assert "198.18.0.1" not in messages and "BV1234567890" not in messages and "SHORT_SECRET" not in messages
+    assert "https://" not in messages
+
+
 def test_guarded_network_context_blocks_real_loopback_connection():
     import socket
     with main._guarded_network():

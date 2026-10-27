@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
+import logging
 import os
 import queue
 import re
@@ -45,6 +46,23 @@ DATA_DIR = Path(os.environ.get("AUDIODOCK_RUNTIME_DIR", os.environ.get("AUDIODOC
 RECYCLE_DIR = DATA_DIR / "recycle"
 STORAGE_CAP = int(os.environ.get("AUDIODOCK_STORAGE_CAP_BYTES", str(2 * 1024**3)))
 app = FastAPI(title="AudioDock API", version=VERSION)
+upstream_logger=logging.getLogger("audiodock.upstream")
+_DIAGNOSTIC_STAGES={"network_guard","bili_shortlink","bili_view_detail","bili_playurl","inspect_upstream"}
+
+def _log_upstream(stage: str, *, exc: BaseException | None = None, status: int | None = None, bili_code: int | None = None) -> None:
+    if stage not in _DIAGNOSTIC_STAGES: stage="inspect_upstream"
+    exception=type(exc).__name__ if exc is not None else "none"
+    http_status=status if isinstance(status,int) and 100<=status<=599 else "none"
+    code=bili_code if isinstance(bili_code,int) else "none"
+    upstream_logger.warning("upstream_failure stage=%s exception=%s http_status=%s bili_code=%s",stage,exception,http_status,code)
+
+def _response_bili_code(response: Any) -> int | None:
+    try:
+        payload=response.json()
+        code=payload.get("code") if isinstance(payload,dict) else None
+        return code if isinstance(code,int) else None
+    except Exception:
+        return None
 
 class RequestBodyLimit:
     def __init__(self, app, limit: int): self.app=app; self.limit=limit
@@ -143,14 +161,21 @@ def _socket_guard(event: str, args: tuple[Any,...]) -> None:
         except ValueError:
             name=str(host).lower().rstrip(".")
             if not any(name==suffix or name.endswith("."+suffix) for suffix in _ALLOWED_NETWORK_SUFFIXES):
+                _log_upstream("network_guard",exc=PermissionError())
                 raise PermissionError("outbound host is not allowlisted")
-            if port not in (None,443,"https"): raise PermissionError("outbound port is not allowed")
+            if port not in (None,443,"https"):
+                _log_upstream("network_guard",exc=PermissionError())
+                raise PermissionError("outbound port is not allowed")
         else:
-            if not _is_public_ip(str(ip)) or port not in (None,443,"https"): raise PermissionError("outbound address is not allowed")
+            if not _is_public_ip(str(ip)) or port not in (None,443,"https"):
+                _log_upstream("network_guard",exc=PermissionError())
+                raise PermissionError("outbound address is not allowed")
     elif event in {"socket.connect","socket.connect_ex"}:
         address=args[1]
         if isinstance(address,tuple) and len(address)>=2:
-            if not _is_public_ip(str(address[0])) or address[1]!=443: raise PermissionError("connection target is not allowed")
+            if not _is_public_ip(str(address[0])) or address[1]!=443:
+                _log_upstream("network_guard",exc=PermissionError())
+                raise PermissionError("connection target is not allowed")
 
 sys.addaudithook(_socket_guard)
 
@@ -225,14 +250,25 @@ def metadata(url: str, site: str, *, internal: bool = False) -> dict[str, Any]:
     if site == "bilibili":
         video_id = _bvid(url)
         if not video_id:
+            _log_upstream("bili_shortlink",exc=RuntimeError())
             raise RuntimeError("upstream_unavailable")
         s = GuardedSession(); s.headers.update({"User-Agent": "Mozilla/5.0 AudioDock/0.1", "Referer": url})
         endpoint = "https://api.bilibili.com/x/web-interface/wbi/view/detail"
-        resp = s.get(endpoint, params={"bvid": video_id, "platform": "web"}, timeout=15)
+        try: resp = s.get(endpoint, params={"bvid": video_id, "platform": "web"}, timeout=15)
+        except Exception as exc:
+            _log_upstream("bili_view_detail",exc=exc)
+            raise
         if resp.status_code != 200:
+            _log_upstream("bili_view_detail",status=resp.status_code,bili_code=_response_bili_code(resp))
             raise RuntimeError("upstream_unavailable")
-        view = resp.json().get("data", {}).get("View")
+        try:
+            data=resp.json()
+            view=data.get("data", {}).get("View")
+        except Exception as exc:
+            _log_upstream("bili_view_detail",exc=exc,status=resp.status_code)
+            raise
         if not view:
+            _log_upstream("bili_view_detail",status=resp.status_code,bili_code=data.get("code") if isinstance(data.get("code"),int) else None)
             raise RuntimeError("upstream_unavailable")
         result = {"url": url, "site": site, "id": video_id, "title": str(view.get("title", ""))[:300], "uploader": str(view.get("owner", {}).get("name", ""))[:100], "duration": int(view.get("duration", 0)), "thumbnail": view.get("pic")}
         if internal: result["_cid"] = view.get("cid")
@@ -249,11 +285,18 @@ def _bvid(url: str, hops: int = 0) -> str | None:
     if m: return m.group(1)
     if p.hostname == "b23.tv" and hops < 3:
         # Short URL resolution is handled without following arbitrary redirects.
-        s = GuardedSession(); r = s.get(url, timeout=10)
+        s = GuardedSession()
+        try: r = s.get(url, timeout=10)
+        except Exception as exc:
+            _log_upstream("bili_shortlink",exc=exc)
+            raise
         loc = r.headers.get("Location", "")
         target = urljoin(url, loc)
         if r.is_redirect and urlparse(target).hostname in ALLOWED_HOSTS and urlparse(target).scheme == "https":
             return _bvid(target,hops+1)
+        _log_upstream("bili_shortlink",status=r.status_code)
+    elif p.hostname == "b23.tv":
+        _log_upstream("bili_shortlink",exc=RuntimeError())
     return None
 
 def options_ok(body: JobBody) -> str | None:
@@ -341,11 +384,25 @@ def _bili_download(url: str, dest: Path, j: dict[str, Any], meta: dict[str, Any]
     bv = meta["id"]
     s = GuardedSession(); s.headers.update({"User-Agent": "Mozilla/5.0", "Referer": url})
     cid = meta.get("_cid")
-    if not cid: raise RuntimeError("upstream_unavailable")
-    r = s.get("https://api.bilibili.com/x/player/playurl", params={"bvid":bv,"cid":cid,"fnval":4048,"qn":127,"fourk":1}, timeout=15)
-    if r.status_code != 200: raise RuntimeError("upstream_unavailable")
-    dash = r.json().get("data",{}).get("dash",{}); audios=dash.get("audio",[])
-    if not audios: raise RuntimeError("upstream_unavailable")
+    if not cid:
+        _log_upstream("bili_playurl",exc=RuntimeError())
+        raise RuntimeError("upstream_unavailable")
+    try: r = s.get("https://api.bilibili.com/x/player/playurl", params={"bvid":bv,"cid":cid,"fnval":4048,"qn":127,"fourk":1}, timeout=15)
+    except Exception as exc:
+        _log_upstream("bili_playurl",exc=exc)
+        raise
+    if r.status_code != 200:
+        _log_upstream("bili_playurl",status=r.status_code,bili_code=_response_bili_code(r))
+        raise RuntimeError("upstream_unavailable")
+    try:
+        data=r.json()
+        dash=data.get("data",{}).get("dash",{}); audios=dash.get("audio",[])
+    except Exception as exc:
+        _log_upstream("bili_playurl",exc=exc,status=r.status_code)
+        raise
+    if not audios:
+        _log_upstream("bili_playurl",status=r.status_code,bili_code=data.get("code") if isinstance(data.get("code"),int) else None)
+        raise RuntimeError("upstream_unavailable")
     audio=max(audios,key=lambda x:int(x.get("bandwidth",0)))
     codecs=str(audio.get("codecs", "")).lower(); mime=str(audio.get("mimeType",audio.get("mime_type", ""))).lower()
     if "flac" in codecs or "flac" in mime: meta["_ext"]="flac"
@@ -575,9 +632,12 @@ def inspect(body: InputBody, request: Request):
     future=inspect_executor.submit(metadata,url,site)
     try: return future.result(timeout=25)
     except FutureTimeout:
+        _log_upstream("inspect_upstream",exc=FutureTimeout())
         released=False; future.add_done_callback(lambda _: inspect_semaphore.release())
         return fail("upstream_unavailable","读取视频信息超时，请稍后重试",504)
-    except Exception: return fail("upstream_unavailable","暂时无法读取视频信息，请稍后重试",502)
+    except Exception as exc:
+        _log_upstream("inspect_upstream",exc=exc)
+        return fail("upstream_unavailable","暂时无法读取视频信息，请稍后重试",502)
     finally:
         if released: inspect_semaphore.release()
 

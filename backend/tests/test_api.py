@@ -108,6 +108,21 @@ def test_restricts_non_https_private_and_unknown_domains():
         else: assert False, f"accepted unsupported URL {url}"
 
 
+def test_inspect_logs_exception_class_without_input_or_error_text(monkeypatch, caplog):
+    import logging
+    import requests
+    secret_url="https://cdn.example/audio?token=SECRET_TOKEN&sig=SECRET_SIGNATURE"
+    def broken_metadata(*args,**kwargs): raise requests.RequestException(secret_url)
+    monkeypatch.setattr(main,"metadata",broken_metadata)
+    with caplog.at_level(logging.WARNING,logger="audiodock.upstream"):
+        response=main.inspect(main.InputBody(input="https://youtu.be/abc?token=PRIVATE_INPUT"),request("198.51.100.240"))
+    assert response.status_code==502
+    logs="\n".join(record.getMessage() for record in caplog.records)
+    assert "stage=inspect_upstream" in logs and "exception=RequestException" in logs
+    assert "SECRET_TOKEN" not in logs and "SECRET_SIGNATURE" not in logs and "PRIVATE_INPUT" not in logs
+    assert secret_url not in logs and "https://" not in logs
+
+
 def test_parameter_rules_and_queue_capacity():
     clear_state()
     bad = main.create_job(main.JobBody(input="https://youtu.be/abc", format="mp3", bitrate=96), request())
