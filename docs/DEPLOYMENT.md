@@ -24,6 +24,12 @@ The included Blueprint requests Free only. Do not add a payment method or upgrad
 compute just to make the demo work without first deciding your own spending limit.
 Render may require you to complete account verification yourself.
 
+You can also create a **Web Service → Public Git Repository** without connecting
+your entire GitHub account. Choose Docker, branch `main`, Singapore and **Free**;
+leave the root directory empty, use `/api/health`, and copy the backend environment
+variables from `render.yaml`. This route requires manual deployments when the
+dashboard does not offer automatic deploys for a public URL.
+
 ## Local development
 
 Start the backend from repository root with:
@@ -51,6 +57,13 @@ Run **one** Uvicorn worker; the queue and rate limiter belong to one process.
 Do not expose a local development instance to the Internet without equivalent
 configuration. Trusting arbitrary forwarding headers would make client limits
 ineffective. Access logs are disabled to avoid logging download tokens in queries.
+
+Media requests use a fixed Python HTTP stack, HTTPS/CDN host restrictions, and
+checks on resolved public IP addresses. YouTube/Vimeo downloads currently require
+a direct HTTPS audio stream; an external network downloader is not allowed.
+FFmpeg accepts local files and pipes only. These checks are application safeguards,
+not a system sandbox; do not install alternative native HTTP/download backends
+without reviewing their network behavior.
 
 ## Files and retention
 
